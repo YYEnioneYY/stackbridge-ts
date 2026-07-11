@@ -115,3 +115,40 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# JWT Settings
+JWT_ACCESS_SECRET = config("JWT_ACCESS_SECRET")
+JWT_REFRESH_SECRET = config("JWT_REFRESH_SECRET")
+
+JWT_ALGORITHM = config(
+    "JWT_ALGORITHM",
+    default="HS256",
+)
+
+JWT_ISSUER = config(
+    "JWT_ISSUER",
+    default="stackbridge-ts",
+)
+
+JWT_AUDIENCE = config(
+    "JWT_AUDIENCE",
+    default="stackbridge-ts-api",
+)
+
+JWT_ACCESS_TTL_MINUTES = config(
+    "JWT_ACCESS_TTL_MINUTES",
+    default=15,
+    cast=int,
+)
+
+JWT_REFRESH_TTL_DAYS = config(
+    "JWT_REFRESH_TTL_DAYS",
+    default=30,
+    cast=int,
+)
+
+JWT_LEEWAY_SECONDS = config(
+    "JWT_LEEWAY_SECONDS",
+    default=5,
+    cast=int,
+)
