@@ -1,3 +1,5 @@
+from typing import Any
+
 from django.db import models
 from django.db.models import F, Q
 from django.db.models.functions import Lower
@@ -9,9 +11,7 @@ from apps.common.models import BaseModel
 class User(BaseModel):
     email = models.EmailField(max_length=255)
     password_hash = models.CharField(max_length=255)
-
     is_active = models.BooleanField(default=True)
-
     email_verified_at = models.DateTimeField(null=True, blank=True)
     last_login_at = models.DateTimeField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
@@ -19,10 +19,7 @@ class User(BaseModel):
     class Meta:
         db_table = "auth_users"
         constraints = [
-            models.UniqueConstraint(
-                Lower("email"),
-                name="auth_users_email_lower_unique",
-            ),
+            models.UniqueConstraint(Lower("email"), name="auth_users_email_lower_unique"),
             models.CheckConstraint(
                 condition=Q(deleted_at__isnull=True) | Q(is_active=False),
                 name="auth_users_deleted_at_requires_inactive",
@@ -34,33 +31,32 @@ class User(BaseModel):
             models.Index(fields=["created_at"], name="auth_users_created_at_idx"),
         ]
 
-    def save(self, *args, **kwargs):
-        if self.email:
-            self.email = self.email.strip().lower()
+    @property
+    def is_authenticated(self) -> bool:
+        return True
 
+    @property
+    def is_anonymous(self) -> bool:
+        return False
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        self.email = self.email.strip().lower()
         super().save(*args, **kwargs)
 
-    def soft_delete(self):
+    def soft_delete(self) -> None:
         self.is_active = False
         self.deleted_at = timezone.now()
         self.save(update_fields=["is_active", "deleted_at", "updated_at"])
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.email
 
 
 class AuthSession(BaseModel):
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name="sessions",
-    )
-
-    refresh_token_hash = models.CharField(max_length=255, unique=True)
-
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="sessions")
+    refresh_token_hash = models.CharField(max_length=64, unique=True)
     user_agent = models.TextField(blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
-
     expires_at = models.DateTimeField()
     revoked_at = models.DateTimeField(null=True, blank=True)
 
@@ -71,6 +67,10 @@ class AuthSession(BaseModel):
                 condition=Q(expires_at__gt=F("created_at")),
                 name="auth_sessions_expires_after_created",
             ),
+            models.CheckConstraint(
+                condition=Q(revoked_at__isnull=True) | Q(revoked_at__gte=F("created_at")),
+                name="auth_sessions_revoke_time",
+            ),
         ]
         indexes = [
             models.Index(fields=["user"], name="auth_sessions_user_idx"),
@@ -80,20 +80,13 @@ class AuthSession(BaseModel):
         ]
 
     @property
-    def is_expired(self):
-        return self.expires_at <= timezone.now()
+    def is_active_session(self) -> bool:
+        return self.revoked_at is None and self.expires_at > timezone.now()
 
-    @property
-    def is_revoked(self):
-        return self.revoked_at is not None
+    def revoke(self) -> None:
+        if self.revoked_at is None:
+            self.revoked_at = timezone.now()
+            self.save(update_fields=["revoked_at", "updated_at"])
 
-    @property
-    def is_active_session(self):
-        return not self.is_revoked and not self.is_expired
-
-    def revoke(self):
-        self.revoked_at = timezone.now()
-        self.save(update_fields=["revoked_at", "updated_at"])
-
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.user.email} | {self.created_at}"
