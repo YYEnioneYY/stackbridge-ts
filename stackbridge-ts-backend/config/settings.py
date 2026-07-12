@@ -125,16 +125,6 @@ JWT_ALGORITHM = config(
     default="HS256",
 )
 
-JWT_ISSUER = config(
-    "JWT_ISSUER",
-    default="stackbridge-ts",
-)
-
-JWT_AUDIENCE = config(
-    "JWT_AUDIENCE",
-    default="stackbridge-ts-api",
-)
-
 JWT_ACCESS_TTL_MINUTES = config(
     "JWT_ACCESS_TTL_MINUTES",
     default=15,
@@ -144,11 +134,5 @@ JWT_ACCESS_TTL_MINUTES = config(
 JWT_REFRESH_TTL_DAYS = config(
     "JWT_REFRESH_TTL_DAYS",
     default=30,
-    cast=int,
-)
-
-JWT_LEEWAY_SECONDS = config(
-    "JWT_LEEWAY_SECONDS",
-    default=5,
     cast=int,
 )

@@ -13,25 +13,29 @@ REFRESH_TOKEN_TYPE = "refresh"
 
 
 class TokenValidationError(Exception):
-    """Базовая ошибка проверки JWT."""
+    """Базовая ошибка проверки токена."""
 
 
 class TokenExpiredError(TokenValidationError):
-    """Срок действия JWT истёк."""
+    """Срок действия токена истёк."""
 
 
 class TokenTypeError(TokenValidationError):
-    """Передан JWT неправильного типа."""
+    """Передан токен неправильного типа."""
+
+
+class TokenPayloadFormatError(TokenValidationError):
+    """Payload токена имеет неправильный формат."""
 
 
 @dataclass(frozen=True)
 class TokenPayload:
     user_id: UUID
     session_id: UUID
-    token_id: UUID
     token_type: str
     issued_at: datetime
     expires_at: datetime
+    token_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -47,16 +51,24 @@ def create_access_token(
     user_id: UUID,
     session_id: UUID,
 ) -> tuple[str, datetime]:
-    expires_at = _utc_now() + timedelta(
+    issued_at = _utc_now()
+
+    expires_at = issued_at + timedelta(
         minutes=settings.JWT_ACCESS_TTL_MINUTES,
     )
 
-    token = _create_token(
-        user_id=user_id,
-        session_id=session_id,
-        token_type=ACCESS_TOKEN_TYPE,
-        expires_at=expires_at,
-        secret=settings.JWT_ACCESS_SECRET,
+    payload = {
+        "sub": str(user_id),
+        "sid": str(session_id),
+        "type": ACCESS_TOKEN_TYPE,
+        "iat": issued_at,
+        "exp": expires_at,
+    }
+
+    token = jwt.encode(
+        payload=payload,
+        key=settings.JWT_ACCESS_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
     )
 
     return token, expires_at
@@ -67,16 +79,25 @@ def create_refresh_token(
     user_id: UUID,
     session_id: UUID,
 ) -> tuple[str, datetime]:
-    expires_at = _utc_now() + timedelta(
+    issued_at = _utc_now()
+
+    expires_at = issued_at + timedelta(
         days=settings.JWT_REFRESH_TTL_DAYS,
     )
 
-    token = _create_token(
-        user_id=user_id,
-        session_id=session_id,
-        token_type=REFRESH_TOKEN_TYPE,
-        expires_at=expires_at,
-        secret=settings.JWT_REFRESH_SECRET,
+    payload = {
+        "sub": str(user_id),
+        "sid": str(session_id),
+        "jti": str(uuid4()),
+        "type": REFRESH_TOKEN_TYPE,
+        "iat": issued_at,
+        "exp": expires_at,
+    }
+
+    token = jwt.encode(
+        payload=payload,
+        key=settings.JWT_REFRESH_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
     )
 
     return token, expires_at
@@ -106,19 +127,46 @@ def create_token_pair(
 
 
 def verify_access_token(token: str) -> TokenPayload:
-    return _verify_token(
+    payload = _decode_token(
         token=token,
-        expected_type=ACCESS_TOKEN_TYPE,
         secret=settings.JWT_ACCESS_SECRET,
+        required_claims=[
+            "sub",
+            "sid",
+            "type",
+            "iat",
+            "exp",
+        ],
     )
+
+    if payload.get("type") != ACCESS_TOKEN_TYPE:
+        raise TokenTypeError(
+            "Expected an access token.",
+        )
+
+    return _build_token_payload(payload)
 
 
 def verify_refresh_token(token: str) -> TokenPayload:
-    return _verify_token(
+    payload = _decode_token(
         token=token,
-        expected_type=REFRESH_TOKEN_TYPE,
         secret=settings.JWT_REFRESH_SECRET,
+        required_claims=[
+            "sub",
+            "sid",
+            "jti",
+            "type",
+            "iat",
+            "exp",
+        ],
     )
+
+    if payload.get("type") != REFRESH_TOKEN_TYPE:
+        raise TokenTypeError(
+            "Expected a refresh token.",
+        )
+
+    return _build_token_payload(payload)
 
 
 def hash_refresh_token(token: str) -> str:
@@ -127,89 +175,55 @@ def hash_refresh_token(token: str) -> str:
     ).hexdigest()
 
 
-def _create_token(
-    *,
-    user_id: UUID,
-    session_id: UUID,
-    token_type: str,
-    expires_at: datetime,
-    secret: str,
-) -> str:
-    issued_at = _utc_now()
-
-    payload = {
-        "sub": str(user_id),
-        "sid": str(session_id),
-        "jti": str(uuid4()),
-        "type": token_type,
-        "iss": settings.JWT_ISSUER,
-        "aud": settings.JWT_AUDIENCE,
-        "iat": issued_at,
-        "nbf": issued_at,
-        "exp": expires_at,
-    }
-
-    return jwt.encode(
-        payload=payload,
-        key=secret,
-        algorithm=settings.JWT_ALGORITHM,
-    )
-
-
-def _verify_token(
+def _decode_token(
     *,
     token: str,
-    expected_type: str,
     secret: str,
-) -> TokenPayload:
+    required_claims: list[str],
+) -> dict[str, Any]:
     if not token:
-        raise TokenValidationError("Token is required.")
+        raise TokenValidationError(
+            "Token is required.",
+        )
 
     try:
-        payload: dict[str, Any] = jwt.decode(
+        return jwt.decode(
             jwt=token,
             key=secret,
             algorithms=[settings.JWT_ALGORITHM],
-            audience=settings.JWT_AUDIENCE,
-            issuer=settings.JWT_ISSUER,
-            leeway=settings.JWT_LEEWAY_SECONDS,
             options={
-                "require": [
-                    "sub",
-                    "sid",
-                    "jti",
-                    "type",
-                    "iss",
-                    "aud",
-                    "iat",
-                    "nbf",
-                    "exp",
-                ],
+                "require": required_claims,
             },
         )
     except jwt.ExpiredSignatureError as error:
         raise TokenExpiredError(
             "Token has expired.",
         ) from error
+    except jwt.MissingRequiredClaimError as error:
+        raise TokenPayloadFormatError(
+            f"Required token field is missing: {error.claim}.",
+        ) from error
     except jwt.InvalidTokenError as error:
         raise TokenValidationError(
             "Token is invalid.",
         ) from error
 
-    token_type = payload.get("type")
 
-    if token_type != expected_type:
-        raise TokenTypeError(
-            f"Expected {expected_type} token, "
-            f"received {token_type!r}.",
+def _build_token_payload(
+    payload: dict[str, Any],
+) -> TokenPayload:
+    try:
+        token_id = (
+            UUID(payload["jti"])
+            if payload.get("jti")
+            else None
         )
 
-    try:
         return TokenPayload(
             user_id=UUID(payload["sub"]),
             session_id=UUID(payload["sid"]),
-            token_id=UUID(payload["jti"]),
-            token_type=token_type,
+            token_id=token_id,
+            token_type=payload["type"],
             issued_at=datetime.fromtimestamp(
                 payload["iat"],
                 tz=timezone.utc,
@@ -220,7 +234,7 @@ def _verify_token(
             ),
         )
     except (KeyError, TypeError, ValueError) as error:
-        raise TokenValidationError(
+        raise TokenPayloadFormatError(
             "Token payload has an invalid format.",
         ) from error
 
